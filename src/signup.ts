@@ -1,70 +1,89 @@
-import crypto from "crypto";
-import pgp from "pg-promise";
+import crypto from "node:crypto";
 import express from "express";
 import { validateCpf } from "./validateCpf";
+import { connection } from "./database";
 
-const app = express();
+const INVALID_CAR_PLATE = -5;
+const EMAIL_ALREADY_EXISTS = -4;
+const INVALID_NAME = -3;
+const INVALID_EMAIL = -2;
+const INVALID_CPF = -1;
+
+const validateName = (name: string) => {
+  return name.match(/[a-zA-Z] [a-zA-Z]+/);
+};
+
+const validateEmail = (email: string) => {
+  return email.match(/^(.+)@(.+)$/);
+};
+
+const validateDriverCarPlate = (carPlate: string) => {
+  return carPlate.match(/[A-Z]{3}[0-9]{4}/);
+};
+
+const queryAccountByEmail = async (email: string) => {
+  const [acc] = await connection.query(
+    "SELECT * FROM ccca.account WHERE email = $1",
+    [email]
+  );
+  return acc;
+};
+
+type Account = {
+  id: string;
+  name: string;
+  email: string;
+  cpf: string;
+  carPlate: string;
+  isPassenger: boolean;
+  isDriver: boolean;
+  password: string;
+};
+
+const insertAccount = async (newAccount: Account) => {
+  const { id, name, email, cpf, carPlate, isPassenger, isDriver, password } =
+    newAccount;
+  await connection.query(
+    "INSERT INTO ccca.account (account_id, name, email, cpf, car_plate, is_passenger, is_driver, password) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    [id, name, email, cpf, carPlate, !!isPassenger, !!isDriver, password]
+  );
+};
+
+export const app = express();
 app.use(express.json());
 
-app.post("/signup", async function (req, res) {
-	const input = req.body;
-	const connection = pgp()("postgres://postgres:123456@localhost:5432/app");
-	try {
-		const id = crypto.randomUUID();
-		let result;
-		const [acc] = await connection.query("select * from ccca.account where email = $1", [input.email]);
-		if (!acc) {
+app.post("/signup", async (req, res) => {
+  const { name, email, cpf, carPlate, isPassenger, isDriver, password } =
+    req.body;
 
-			if (input.name.match(/[a-zA-Z] [a-zA-Z]+/)) {
-				if (input.email.match(/^(.+)@(.+)$/)) {
+  try {
+    const acc = await queryAccountByEmail(email);
+    if (acc) return res.status(422).json({ message: EMAIL_ALREADY_EXISTS }); // already exists
 
-					if (validateCpf(input.cpf)) {
-						if (input.isDriver) {
-							if (input.carPlate.match(/[A-Z]{3}[0-9]{4}/)) {
-								await connection.query("insert into ccca.account (account_id, name, email, cpf, car_plate, is_passenger, is_driver, password) values ($1, $2, $3, $4, $5, $6, $7, $8)", [id, input.name, input.email, input.cpf, input.carPlate, !!input.isPassenger, !!input.isDriver, input.password]);
-								
-								const obj = {
-									accountId: id
-								};
-								result = obj;
-							} else {
-								// invalid car plate
-								result = -5;
-							}
-						} else {
-							await connection.query("insert into ccca.account (account_id, name, email, cpf, car_plate, is_passenger, is_driver, password) values ($1, $2, $3, $4, $5, $6, $7, $8)", [id, input.name, input.email, input.cpf, input.carPlate, !!input.isPassenger, !!input.isDriver, input.password]);
+    if (!validateName(name))
+      return res.status(422).json({ message: INVALID_NAME });
+    if (!validateEmail(email))
+      return res.status(422).json({ message: INVALID_EMAIL });
+    if (!validateCpf(cpf))
+      return res.status(422).json({ message: INVALID_CPF });
+    if (isDriver && !validateDriverCarPlate(carPlate))
+      return res.status(422).json({ message: INVALID_CAR_PLATE });
 
-							const obj = {
-								accountId: id
-							};
-							result = obj;
-						}
-					} else {
-						// invalid cpf
-						result = -1;
-					}
-				} else {
-					// invalid email
-					result = -2;
-				}
+    const id = crypto.randomUUID();
 
-			} else {
-				// invalid name
-				result = -3;
-			}
+    await insertAccount({
+      id,
+      name,
+      email,
+      cpf,
+      carPlate,
+      isPassenger,
+      isDriver,
+      password,
+    });
 
-		} else {
-			// already exists
-			result = -4;
-		}
-		if (typeof result === "number") {
-			res.status(422).json({ message: result });
-		} else {
-			res.json(result);
-		}
-	} finally {
-		await connection.$pool.end();
-	}
+    res.json({ accountId: id });
+  } catch (err) {
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
-
-app.listen(3000);
